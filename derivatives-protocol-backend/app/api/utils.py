@@ -11,7 +11,3 @@ TIMEFRAME_SECONDS = {
 
 def get_candle_start(ts: int, tf_seconds: int) -> int:
     return ts - (ts % tf_seconds)
-
-
-def normalize_hex(value: str) -> str:
-    return value.lower().removeprefix("0x")

@@ -57,6 +57,8 @@ class MarketModel(Base):
     # Token info
     base_token = Column(String(42), nullable=False)
     quote_token = Column(String(42), nullable=False)
+    market_token = Column(String(100), nullable=False)
+    collateral_token = Column(String(100), nullable=False)
     symbol = Column(String(20), nullable=False, index=True)
     pyth_price_id = Column(String(66), nullable=False)
 
@@ -83,6 +85,11 @@ class MarketModel(Base):
     current_funding_rate = Column(Numeric(10, 6), default=Decimal("0"))
     last_funding_update = Column(DateTime(timezone=True), nullable=True)
 
+    # Contract Identifiers
+    coinTradeType = Column(String(100), nullable=False)
+    marketCoinTradeID = Column(String(100), nullable=False)
+    priceFeedCoinTradeID = Column(String(100), nullable=False)
+
     # Timestamps
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -106,11 +113,11 @@ class PositionModel(Base):
     __tablename__ = "positions"
 
     id = Column(Integer, primary_key=True, index=True)
-    position_id = Column(String(100), unique=True, nullable=False, index=True)
+    position_id = Column(String(1000), unique=True, nullable=False, index=True)
 
     # References
     market_id = Column(String(100), nullable=False, index=True)
-    user_address = Column(String(44), nullable=False, index=True)
+    user_address = Column(String(100), nullable=False, index=True)
 
     # Position details
     side = Column(SQLEnum(PositionSideEnum), nullable=False)
@@ -189,8 +196,8 @@ class LiquidationModel(Base):
 
     position_id = Column(String(100), nullable=False, index=True)
     market_id = Column(String(100), nullable=False)
-    user_address = Column(String(42), nullable=False, index=True)
-    liquidator_address = Column(String(42), nullable=False)
+    user_address = Column(String(100), nullable=False, index=True)
+    liquidator_address = Column(String(100), nullable=False)
 
     liquidation_price = Column(Numeric(30, 18), nullable=False)
     collateral = Column(Numeric(30, 18), nullable=False)

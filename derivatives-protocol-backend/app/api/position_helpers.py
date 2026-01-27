@@ -1,21 +1,29 @@
 from datetime import datetime
 from decimal import Decimal
+from enum import Enum
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.models import ClosePositionRequest, OpenPositionRequest
+from app.api.models import (
+    ClosePositionRequest,
+    OpenPositionRequest,
+    SponsoredTxRequest,
+    SponsoredTxResponse,
+)
 from app.constants import TOKEN_ADDRESS_TO_SYMBOL
 from app.db.models import MarketModel, PositionStatusEnum
 from app.db.session import get_db
 from app.schemas.common import ResponseBase
 from app.schemas.position import PositionSide, PositionStatus
-from app.services.blockchain import blockchain_service
+from app.services.contract_service.transaction_service import tx_service
 from app.services.notifications import notify_position_closed, notify_position_opened
 from app.services.oracle import oracle_service
+from app.utils.calculations import calculate_liquidation_price, calculate_pnl
 
 router = APIRouter(prefix="/positions", tags=["Position Helpers"])
 
@@ -25,6 +33,11 @@ router = APIRouter(prefix="/positions", tags=["Position Helpers"])
 # ============================================================================
 
 
+class TokenInPair(str, Enum):
+    MARKET_TOKEN = "market_token"
+    COLLATERAL_TOKEN = "collateral_token"
+
+
 class PositionPreviewRequest(BaseModel):
     """Request to preview a position before opening."""
 
@@ -32,14 +45,16 @@ class PositionPreviewRequest(BaseModel):
     side: PositionSide = Field(..., description="Position side: long or short")
     size: Decimal = Field(..., gt=0, description="Position size")
     leverage: Decimal = Field(..., gt=0, le=500, description="Leverage (1-500)")
+    token_type: TokenInPair = Field(..., description="Token in pair")
 
     class Config:
         json_schema_extra: dict[str, dict[str, str]] = {
             "example": {
-                "market_id": "bnb-usdc-perp",
+                "market_id": "btc-usdh-perp",
                 "side": "long",
                 "size": "1.5",
                 "leverage": "10",
+                "token_type": "market_token",
             }
         }
 
@@ -50,6 +65,7 @@ class PositionPreviewResponse(BaseModel):
     market_id: str
     symbol: str
     collateral_in: str
+    market_token: str
     available_balance: Decimal
     side: str
     size: Decimal
@@ -62,13 +78,15 @@ class PositionPreviewResponse(BaseModel):
     max_loss: Decimal
     estimated_fees: Decimal
     total_cost: Decimal
+    converted_size: Decimal
 
     class Config:
         json_schema_extra: dict[str, dict[str, str]] = {
             "example": {
                 "market_id": "bnb-usdc-perp",
                 "symbol": "BNB/USDC",
-                "collateral_in": "USDC",
+                "collateral_in": "USDH",
+                "market_token": "BTC",
                 "available_balance": "10000",
                 "side": "long",
                 "size": "1.5",
@@ -81,6 +99,7 @@ class PositionPreviewResponse(BaseModel):
                 "max_loss": "7500",
                 "estimated_fees": "75",
                 "total_cost": "7575",
+                "converted_size": "1.5",
             }
         }
 
@@ -145,6 +164,16 @@ async def preview_position(
     result = await db.execute(stmt)
     market = result.scalar_one_or_none()
 
+    # Get current price
+    price_data = await oracle_service.get_latest_price(market.pyth_price_id)
+
+    size: float = request.size
+    if request.token_type == TokenInPair.COLLATERAL_TOKEN:
+        size /= price_data.normalized_price
+        converted_size = size
+    else:
+        converted_size = request.size * price_data.normalized_price
+
     if not market:
         raise HTTPException(
             status_code=404, detail=f"Market {request.market_id} not found"
@@ -154,13 +183,13 @@ async def preview_position(
         raise HTTPException(status_code=400, detail="Side must be 'long' or 'short'")
 
     # Check position size limits
-    if request.size < market.min_position_size:
+    if size < market.min_position_size:
         raise HTTPException(
             status_code=400,
             detail=f"Position size must be at least {market.min_position_size}",
         )
 
-    if request.size > market.max_position_size:
+    if size > market.max_position_size:
         raise HTTPException(
             status_code=400,
             detail=f"Position size cannot exceed {market.max_position_size}",
@@ -172,21 +201,18 @@ async def preview_position(
             status_code=400, detail=f"Leverage cannot exceed {market.max_leverage}x"
         )
 
-    # Get current price
-    price_data = await oracle_service.get_latest_price(market.pyth_price_id)
-
     if not price_data:
         raise HTTPException(status_code=503, detail="Cannot fetch current price")
 
     entry_price = price_data.normalized_price
 
     # Calculate parameters
-    position_value = request.size * entry_price
+    position_value = converted_size
     collateral_required = position_value / request.leverage
     maintenance_margin = position_value * market.maintenance_margin_rate
 
     # Calculate liquidation price
-    liquidation_price = blockchain_service.calculate_liquidation_price(
+    liquidation_price = calculate_liquidation_price(
         entry_price=entry_price,
         leverage=request.leverage,
         is_long=(request.side == PositionSide.LONG),
@@ -214,6 +240,7 @@ async def preview_position(
         market_id=market.market_id,
         symbol=market.symbol,
         collateral_in=quote_asset_symbol,
+        market_token=market.market_token,
         available_balance=MOCK_USER_BALANCE,
         side=request.side,
         size=request.size,
@@ -226,6 +253,7 @@ async def preview_position(
         max_loss=max_loss,
         estimated_fees=estimated_fees,
         total_cost=total_cost,
+        converted_size=converted_size,
     )
 
     return ResponseBase(
@@ -420,10 +448,12 @@ async def calculate_position_pnl(
         exit_price = price_data.normalized_price
 
     # Calculate PnL
-    if position.side == PositionSide.LONG:
-        pnl = position.size * (exit_price - position.entry_price)
-    else:
-        pnl = position.size * (position.entry_price - exit_price)
+    pnl = calculate_pnl(
+        size_usd=position.size,
+        entry_price=position.entry_price,
+        current_price=exit_price,
+        is_long=(position.side == PositionSide.LONG),
+    )
 
     # Calculate ROI
     roi = (
@@ -500,7 +530,7 @@ async def open_position(
 
     db.add(position)
     await db.commit()
-    liquidation_price = blockchain_service.calculate_liquidation_price(
+    liquidation_price = calculate_liquidation_price(
         entry_price=request.entry_price,
         leverage=request.leverage,
         is_long=(request.side == PositionSide.LONG),
@@ -587,3 +617,41 @@ async def close_position(
             "pnl": str(pnl),
         },
     )
+
+
+@router.post(
+    "/sponsor_gas",
+    response_model=SponsoredTxResponse,
+)
+async def execute_sponsored_transaction_endpoint(
+    req: SponsoredTxRequest,
+):
+    """
+    Execute a gas-sponsored transaction.
+
+    FE flow:
+    - build tx
+    - user signs
+    - FE calls this endpoint
+    """
+    try:
+        result = await tx_service.execute_sponsored_transaction(
+            kind_bytes_b64=req.kindBytesB64,
+            user_signature_b64=req.userSignatureB64,
+            sender=req.sender,
+            gas_budget=req.gasBudget,
+        )
+
+        return {
+            "success": True,
+            "digest": result["digest"],
+            "effects": result.get("effects"),
+            "events": result.get("events"),
+        }
+
+    except Exception as e:
+        logger.error(f"Sponsored tx failed: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail=str(e),
+        )

@@ -44,6 +44,8 @@ async def create_market(
         market_id=market.market_id,
         base_token=market.base_token,
         quote_token=market.quote_token,
+        market_token=market.market_token,
+        collateral_token=market.collateral_token,
         symbol=market.symbol,
         pyth_price_id=market.pyth_price_id,
         max_leverage=market.max_leverage,
@@ -54,6 +56,9 @@ async def create_market(
         funding_rate_interval=market.funding_rate_interval,
         max_funding_rate=market.max_funding_rate,
         status=MarketStatusEnum.ACTIVE,
+        coinTradeType=market.coinTradeType,
+        marketCoinTradeID=market.marketCoinTradeID,
+        priceFeedCoinTradeID=market.priceFeedCoinTradeID,
     )
 
     db.add(new_market)

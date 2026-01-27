@@ -20,6 +20,8 @@ class MarketBase(BaseModel):
     market_id: str = Field(..., description="Unique market identifier")
     base_token: str = Field(..., description="Base token address")
     quote_token: str = Field(..., description="Quote token (usually USDC/USDT)")
+    market_token: str = Field(..., description="Market token (usually USDC)")
+    collateral_token: str = Field(..., description="Collateral token (usually SUI)")
     symbol: str = Field(..., description="Trading symbol (e.g., BTC/USDC)")
     pyth_price_id: str = Field(..., description="Pyth price feed ID")
 
@@ -40,6 +42,10 @@ class MarketBase(BaseModel):
     max_funding_rate: Decimal = Field(
         default=Decimal("0.001"), description="Max funding rate per interval"
     )
+
+    coinTradeType: str = Field(..., description="Coin trade type")
+    marketCoinTradeID: str = Field(..., description="Market coin trade ID")
+    priceFeedCoinTradeID: str = Field(..., description="Price feed coin trade ID")
 
     @field_validator(
         "max_leverage",

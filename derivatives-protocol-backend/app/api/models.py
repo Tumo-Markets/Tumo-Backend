@@ -52,6 +52,8 @@ class PositionUpdateItem(BaseModel):
     position_id: str
     market_id: str
     symbol: str
+    market_token: str
+    collateral_in: str
     side: PositionSide
     size: Decimal
     collateral: Decimal
@@ -208,3 +210,16 @@ class ClosePositionRequest(BaseModel):
     exit_price: Decimal
     tx_hash: str
     status: PositionStatus = PositionStatus.CLOSED
+
+class SponsoredTxRequest(BaseModel):
+    kindBytesB64: str = Field(..., description="Base64 TransactionKind bytes")
+    userSignatureB64: str = Field(..., description="User signature (flag||sig||pubkey)")
+    sender: str = Field(..., description="User Sui address")
+    gasBudget: int | None = Field(None, description="Optional gas budget override")
+
+
+class SponsoredTxResponse(BaseModel):
+    success: bool
+    digest: str
+    effects: dict
+    events: list | None = None

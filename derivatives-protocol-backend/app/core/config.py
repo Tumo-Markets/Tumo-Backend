@@ -1,4 +1,11 @@
+"""
+Application Settings
+
+Supports both EVM and Onechain (Move-based) blockchains.
+"""
+
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -48,11 +55,83 @@ class Settings(BaseSettings):
     redis_cache_ttl: int = Field(default=300, alias="REDIS_CACHE_TTL")
 
     # ======================
-    # Blockchain (REQUIRED)
+    # contract Service
     # ======================
-    rpc_url: str = Field(..., alias="RPC_URL")
-    chain_id: int = Field(..., alias="CHAIN_ID")
-    contract_address: str = Field(..., alias="CONTRACT_ADDRESS")
+
+    contract_service_url: str = Field(
+        default="http://localhost:3001",
+        alias="CONTRACT_SERVICE_URL",
+    )
+    contract_service_api_key: str = Field(
+        default="",
+        alias="CONTRACT_SERVICE_API_KEY",
+    )
+
+    # ======================
+    # Blockchain Type Selection
+    # ======================
+    blockchain_type: Literal["evm", "onechain"] = Field(
+        default="onechain",
+        alias="BLOCKCHAIN_TYPE",
+        description="Blockchain type: 'evm' for Ethereum-compatible chains, 'onechain' for Move-based chains",
+    )
+
+    # ======================
+    # EVM Blockchain (for Ethereum, BSC, Polygon, etc.)
+    # ======================
+    # Only required if blockchain_type = "evm"
+    evm_rpc_url: str = Field(default="http://localhost:8545", alias="EVM_RPC_URL")
+    evm_chain_id: int = Field(default=1, alias="EVM_CHAIN_ID")
+    evm_contract_address: str = Field(default="", alias="EVM_CONTRACT_ADDRESS")
+    evm_start_block: int = Field(default=0, alias="EVM_START_BLOCK")
+
+    # ======================
+    # Onechain (Move-based blockchain)
+    # ======================
+    # Only required if blockchain_type = "onechain"
+    onechain_network: Literal["local", "testnet", "mainnet"] = Field(
+        default="testnet",
+        alias="ONECHAIN_NETWORK",
+        description="Onechain network selection",
+    )
+
+    # RPC URLs for each Onechain network
+    onechain_rpc_local: str = Field(
+        default="http://127.0.0.1:9000",
+        alias="ONECHAIN_RPC_LOCAL",
+    )
+    onechain_rpc_testnet: str = Field(
+        default="https://rpc-testnet.onelabs.cc:443",
+        alias="ONECHAIN_RPC_TESTNET",
+    )
+    onechain_rpc_mainnet: str = Field(
+        default="https://rpc.mainnet.onelabs.cc:443",
+        alias="ONECHAIN_RPC_MAINNET",
+    )
+
+    # Onechain-specific settings
+    onechain_chain_id: int = Field(
+        default=1,
+        alias="ONECHAIN_CHAIN_ID",
+    )
+    onechain_package_id: str = Field(
+        default="0x31b6ea6f6c2e1727d590fba2b6ccd93dd0785f238fd91cb16030d468a466bc6e",
+        alias="ONECHAIN_PACKAGE_ID",
+        description="Deployed Move package ID",
+    )
+    onechain_start_checkpoint: int = Field(
+        default=0,
+        alias="ONECHAIN_START_CHECKPOINT",
+    )
+
+    # ======================
+    # Backward Compatibility (Legacy)
+    # ======================
+    # These are kept for backward compatibility
+    # They map to EVM settings when blockchain_type = "evm"
+    rpc_url: str = Field(default="", alias="RPC_URL")
+    chain_id: int = Field(default=0, alias="CHAIN_ID")
+    contract_address: str = Field(default="", alias="CONTRACT_ADDRESS")
     start_block: int = Field(default=0, alias="START_BLOCK")
 
     # ======================
@@ -126,14 +205,83 @@ class Settings(BaseSettings):
         return v
 
     # ======================
+    # Properties - Blockchain Configuration
+    # ======================
+
+    @property
+    def is_evm(self) -> bool:
+        """Check if using EVM blockchain."""
+        return self.blockchain_type == "evm"
+
+    @property
+    def is_onechain(self) -> bool:
+        """Check if using Onechain blockchain."""
+        return self.blockchain_type == "onechain"
+
+    @property
+    def onechain_rpc_url(self) -> str:
+        """Get Onechain RPC URL based on selected network."""
+        if self.onechain_network == "local":
+            return self.onechain_rpc_local
+        elif self.onechain_network == "testnet":
+            return self.onechain_rpc_testnet
+        else:
+            return self.onechain_rpc_mainnet
+
+    @property
+    def active_rpc_url(self) -> str:
+        """
+        Get active RPC URL based on blockchain type.
+
+        Returns:
+            RPC URL for the active blockchain
+        """
+        if self.is_onechain:
+            return self.onechain_rpc_url
+        else:
+            # EVM: Use legacy rpc_url if set, otherwise use evm_rpc_url
+            return self.rpc_url or self.evm_rpc_url
+
+    @property
+    def active_chain_id(self) -> int | str:
+        """
+        Get active chain ID based on blockchain type.
+
+        Returns:
+            Chain ID (int for EVM, str for Onechain)
+        """
+        if self.is_onechain:
+            return self.onechain_chain_id
+        else:
+            # EVM: Use legacy chain_id if set, otherwise use evm_chain_id
+            return self.chain_id or self.evm_chain_id
+
+    @property
+    def active_start_block(self) -> int:
+        """
+        Get starting block/checkpoint based on blockchain type.
+
+        Returns:
+            Starting block number (EVM) or checkpoint (Onechain)
+        """
+        if self.is_onechain:
+            return self.onechain_start_checkpoint
+        else:
+            # EVM: Use legacy start_block if set, otherwise use evm_start_block
+            return self.start_block or self.evm_start_block
+
+    # ======================
     # Helpers
     # ======================
+
     @property
     def is_production(self) -> bool:
+        """Check if running in production environment."""
         return self.env.lower() == "production"
 
     @property
     def database_url_sync(self) -> str:
+        """Get synchronous database URL (for Alembic, etc.)."""
         return self.database_url.replace("+asyncpg", "")
 
 

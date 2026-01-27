@@ -6,6 +6,7 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.constants import normalize_hex
 from app.core.config import settings
 from app.db.models import (
     MarketModel,
@@ -15,9 +16,17 @@ from app.db.models import (
 )
 from app.db.session import AsyncSessionLocal
 from app.schemas.position import LiquidationCandidate
-from app.services.blockchain import blockchain_service
-from app.services.notifications import notify_liquidation_warning
+from app.services.contract_service.transaction_service import tx_service
+from app.services.notifications import (
+    notify_liquidation_warning,
+    notify_position_liquidated,
+)
 from app.services.oracle import oracle_service
+from app.utils.calculations import (
+    calculate_health_factor,
+    calculate_liquidation_price,
+    calculate_pnl,
+)
 
 
 class LiquidationBot:
@@ -126,11 +135,11 @@ class LiquidationBot:
         # Check each position
         for position, market in positions_data:
             # Check cooldown
-            if self._is_on_cooldown(position.position_id):
-                continue
+            # if self._is_on_cooldown(position.position_id):
+            #     continue
 
             # Get current price
-            price_data = prices.get(market.pyth_price_id)
+            price_data = prices.get(normalize_hex(market.pyth_price_id))
             if not price_data:
                 logger.warning(f"No price data for market {market.market_id}")
                 continue
@@ -145,28 +154,34 @@ class LiquidationBot:
                 continue
 
             current_price: Decimal = price_data.normalized_price
+            pnl = self.calculate_pnl(
+                position_size=position.size,
+                entry_price=position.entry_price,
+                current_price=current_price,
+                is_long=(position.side == PositionSideEnum.LONG),
+                accumulated_funding=position.accumulated_funding,
+            )
 
             # Calculate health factor
-            health_factor: Decimal = blockchain_service.calculate_health_factor(
+            health_factor: Decimal = calculate_health_factor(
                 collateral=position.collateral,
-                position_size=position.size,
+                size_usd=position.size,
                 entry_price=position.entry_price,
                 current_price=current_price,
                 is_long=(position.side == PositionSideEnum.LONG),
                 maintenance_margin_rate=market.maintenance_margin_rate,
                 accumulated_funding=position.accumulated_funding,
             )
+            is_liquidatable = health_factor <= self.min_health_factor
 
             # Check if liquidatable
-            if health_factor <= self.min_health_factor:
+            if is_liquidatable:
                 # Calculate liquidation price
-                liquidation_price: Decimal = (
-                    blockchain_service.calculate_liquidation_price(
-                        entry_price=position.entry_price,
-                        leverage=position.leverage,
-                        is_long=(position.side == PositionSideEnum.LONG),
-                        maintenance_margin_rate=market.maintenance_margin_rate,
-                    )
+                liquidation_price: Decimal = calculate_liquidation_price(
+                    entry_price=position.entry_price,
+                    leverage=position.leverage,
+                    is_long=(position.side == PositionSideEnum.LONG),
+                    maintenance_margin_rate=market.maintenance_margin_rate,
                 )
 
                 # Calculate potential reward
@@ -281,74 +296,64 @@ class LiquidationBot:
             logger.error(f"Failed to get price update data for {market.pyth_price_id}")
             return
 
-        # TODO: In production, implement actual liquidation:
-        # 1. Build liquidation transaction
-        # 2. Estimate gas
-        # 3. Check gas price vs max_gas_price
-        # 4. Sign transaction
-        # 5. Send transaction
-        # 6. Monitor transaction status
-        # 7. Update database on success
-        # 8. Send notification to user
-
-        # In a real implementation, you would:
-        # 1. Build the liquidation transaction
-        # 2. Estimate gas
-        # 3. Sign transaction
-        # 4. Send transaction
-        # 5. Monitor transaction status
-
-        # Example (pseudo-code):
-        """
         try:
-            # Build transaction
-            tx = contract.functions.liquidatePosition(
-                position_id=candidate.position_id,
-                price_update_data=price_update_data,
-            ).build_transaction({
-                'from': liquidator_address,
-                'gas': estimated_gas,
-                'gasPrice': current_gas_price,
-                'nonce': nonce,
-            })
-            
-            # Sign and send
-            signed_tx = account.sign_transaction(tx)
-            tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-            
-            logger.info(f"Liquidation tx sent: {tx_hash.hex()}")
-            
-            # Wait for confirmation
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-            
-            if receipt.status == 1:
-                logger.info(f"Successfully liquidated {candidate.position_id}")
-                from app.services.notifications import notify_position_liquidated
+            tx_digest = await tx_service.liquidate_position(candidate.user_address)
+
+            logger.info(f"✅ Liquidated {candidate.position_id} | TX: {tx_digest}")
+            position = await db.get(PositionModel, candidate.position_id)
+
+            if position:
+                # Calculate PNL and liquidation fee
+                calculated_pnl = self.calculate_pnl(
+                    position_size=position.size,
+                    entry_price=position.entry_price,
+                    current_price=candidate.current_price,
+                    is_long=(position.side == PositionSideEnum.LONG),
+                    accumulated_funding=position.accumulated_funding,
+                )
+                liquidation_fee = candidate.collateral * market.liquidation_fee_rate
+
+                # New balance is 0 (user lost collateral)
+                new_user_balance = Decimal("0")
+
+                position.status = PositionStatusEnum.LIQUIDATED
+                position.exit_price = candidate.current_price
+                position.close_transaction_hash = tx_digest
+                position.realized_pnl = calculated_pnl
+                position.updated_at = datetime.utcnow()
+
+                await db.commit()
+                await db.refresh(position)
+
+                logger.info(
+                    f"💾 Updated position {position.position_id} in database: "
+                    + f"status=LIQUIDATED, PNL={calculated_pnl:.4f}"
+                )
                 notify_position_liquidated(
-                    user_address=candidate.user_address,
-                    position_id=candidate.position_id,
-                    market_id=candidate.market_id,
+                    user_address=position.user_address,
+                    position_id=position.position_id,
+                    market_id=position.market_id,
                     symbol=market.symbol,
-                    side="long" if position.side == PositionSideEnum.LONG else "short",
+                    side=position.side.value,
                     size=position.size,
                     entry_price=position.entry_price,
-                    exit_price=candidate.current_price,
+                    liquidation_price=candidate.current_price,
                     realized_pnl=calculated_pnl,
+                    liquidation_fee=liquidation_fee,
                     new_balance=new_user_balance,
+                    tx_hash=tx_digest,
                 )
+
             else:
                 logger.error(f"Liquidation failed for {candidate.position_id}")
-                
-        except Exception as e:
-            logger.error(f"Error executing liquidation: {e}")
-        """
 
-        # For now, just log
-        logger.info(
-            f"Would liquidate {candidate.position_id} at price {candidate.current_price} "
-            f"(health factor: {candidate.health_factor:.4f}, "
-            f"reward: {candidate.potential_reward})"
-        )
+        except Exception as e:
+            logger.error(
+                f"❌ Error executing liquidation for {candidate.position_id}: {e}"
+            )
+            # Rollback on error
+            await db.rollback()
+            raise  # Re-raise to be caught by outer try-except
 
     def _is_on_cooldown(self, position_id: str) -> bool:
         """
@@ -405,6 +410,39 @@ class LiquidationBot:
                 "check_interval": self.check_interval,
                 "min_health_factor": self.min_health_factor,
             }
+
+    def calculate_pnl(
+        self,
+        position_size: Decimal,
+        entry_price: Decimal,
+        current_price: Decimal,
+        is_long: bool,
+        accumulated_funding: Decimal,
+    ) -> Decimal:
+        """
+        Calculate position PNL.
+
+        Args:
+            position_size: Position size
+            entry_price: Entry price
+            current_price: Current market price
+            is_long: True for long, False for short
+            accumulated_funding: Accumulated funding fees
+
+        Returns:
+            PNL value (can be negative)
+        """
+        price_pnl: Decimal = calculate_pnl(
+            size_usd=position_size,
+            entry_price=entry_price,
+            current_price=current_price,
+            is_long=is_long,
+        )
+
+        # Subtract funding fees
+        total_pnl = price_pnl - accumulated_funding
+
+        return total_pnl
 
 
 # Global liquidation bot instance

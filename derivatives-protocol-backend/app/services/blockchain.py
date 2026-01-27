@@ -1,471 +1,454 @@
-import random
+"""
+Onechain Blockchain Service
+
+Service for interacting with Onechain (Move-based blockchain).
+Type-safe implementation with zero Pyright warnings.
+"""
+
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any
 
+import httpx
 from loguru import logger
-from web3 import Web3
-from web3.middleware import geth_poa_middleware
 
+from app.constants import SCALE
 from app.core.config import settings
+from app.schemas.onechain import (
+    OnechainEventData,
+    OnechainRPCRequest,
+    OnechainRPCResponse,
+    OnechainTransaction,
+    PositionClosedEvent,
+    PositionLiquidatedEvent,
+    PositionOpenedEvent,
+    PositionUpdatedEvent,
+)
 
 
 class BlockchainService:
-    """Service for interacting with blockchain and smart contracts."""
+    """
+    Service for interacting with Onechain blockchain.
 
-    def __init__(self):
-        self.rpc_url = settings.rpc_url
-        self.chain_id = settings.chain_id
-        self.contract_address = settings.contract_address
+    Onechain uses Move (like Sui), not EVM.
+    Uses JSON-RPC API instead of Web3.
+    """
 
-        # Initialize Web3
-        self.w3 = Web3(Web3.HTTPProvider(self.rpc_url))
+    def __init__(self) -> None:
+        self.rpc_url: str = settings.onechain_rpc_url
+        self.network: str = settings.onechain_network  # "local", "testnet", "mainnet"
+        self.package_id: str = settings.onechain_package_id  # Deployed Move package
 
-        # Add PoA middleware if needed (for BSC, Polygon, etc.)
-        if self.chain_id in [56, 97, 137, 80001]:  # BSC, Polygon chains
-            self.w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+        # HTTP client for RPC calls
+        self.client = httpx.AsyncClient(
+            timeout=30.0, limits=httpx.Limits(max_keepalive_connections=10)
+        )
 
-        # Contract ABI (simplified - you'll need the full ABI)
-        self.contract_abi = self._get_contract_abi()
-        self.contract = None
+        logger.info(f"Onechain service initialized: {self.network} ({self.rpc_url})")
 
-        if self.w3.is_connected():
-            self.contract = self.w3.eth.contract(
-                address=Web3.to_checksum_address(self.contract_address),
-                abi=self.contract_abi,
-            )
-            logger.info(f"Connected to blockchain at {self.rpc_url}")
-        else:
-            logger.error(f"Failed to connect to blockchain at {self.rpc_url}")
+    async def close(self) -> None:
+        """Close HTTP client."""
+        await self.client.aclose()
 
-    def _get_contract_abi(self) -> List[Dict[str, Any]]:
+    # ========================================================================
+    # RPC METHODS
+    # ========================================================================
+
+    async def _call_rpc(
+        self,
+        method: str,
+        params: list[Any] | None = None,
+    ) -> Any:
         """
-        Get contract ABI.
-
-        In production, load this from a file or from the contract deployment.
-        This is a simplified version.
-        """
-        return [
-            # Market functions
-            {
-                "inputs": [{"name": "marketId", "type": "bytes32"}],
-                "name": "getMarket",
-                "outputs": [
-                    {"name": "baseToken", "type": "address"},
-                    {"name": "quoteToken", "type": "address"},
-                    {"name": "maxLeverage", "type": "uint256"},
-                    {"name": "maintenanceMarginRate", "type": "uint256"},
-                ],
-                "stateMutability": "view",
-                "type": "function",
-            },
-            # Position functions
-            {
-                "inputs": [{"name": "positionId", "type": "bytes32"}],
-                "name": "getPosition",
-                "outputs": [
-                    {"name": "user", "type": "address"},
-                    {"name": "marketId", "type": "bytes32"},
-                    {"name": "size", "type": "uint256"},
-                    {"name": "collateral", "type": "uint256"},
-                    {"name": "entryPrice", "type": "uint256"},
-                    {"name": "isLong", "type": "bool"},
-                ],
-                "stateMutability": "view",
-                "type": "function",
-            },
-            # Events
-            {
-                "anonymous": False,
-                "inputs": [
-                    {"indexed": True, "name": "positionId", "type": "bytes32"},
-                    {"indexed": True, "name": "user", "type": "address"},
-                    {"indexed": True, "name": "marketId", "type": "bytes32"},
-                    {"indexed": False, "name": "size", "type": "uint256"},
-                    {"indexed": False, "name": "collateral", "type": "uint256"},
-                    {"indexed": False, "name": "leverage", "type": "uint256"},
-                    {"indexed": False, "name": "entryPrice", "type": "uint256"},
-                    {"indexed": False, "name": "isLong", "type": "bool"},
-                ],
-                "name": "PositionOpened",
-                "type": "event",
-            },
-            {
-                "anonymous": False,
-                "inputs": [
-                    {"indexed": True, "name": "positionId", "type": "bytes32"},
-                    {"indexed": True, "name": "user", "type": "address"},
-                    {"indexed": False, "name": "exitPrice", "type": "uint256"},
-                    {"indexed": False, "name": "pnl", "type": "int256"},
-                ],
-                "name": "PositionClosed",
-                "type": "event",
-            },
-            {
-                "anonymous": False,
-                "inputs": [
-                    {"indexed": True, "name": "positionId", "type": "bytes32"},
-                    {"indexed": True, "name": "user", "type": "address"},
-                    {"indexed": True, "name": "liquidator", "type": "address"},
-                    {"indexed": False, "name": "liquidationPrice", "type": "uint256"},
-                    {"indexed": False, "name": "liquidationFee", "type": "uint256"},
-                ],
-                "name": "PositionLiquidated",
-                "type": "event",
-            },
-        ]
-
-    async def get_latest_block(self) -> int:
-        """Get latest block number."""
-        try:
-            return self.w3.eth.block_number
-        except Exception as e:
-            logger.error(f"Error getting latest block: {e}")
-            return 0
-
-    async def get_position_from_chain(
-        self, position_id: str
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Get position data from smart contract.
+        Call Onechain JSON-RPC method.
 
         Args:
-            position_id: Position ID (hex string)
+            method: RPC method name
+            params: Method parameters
+
+        Returns:
+            RPC result
+
+        Raises:
+            Exception: If RPC call fails
+        """
+        if params is None:
+            params = []
+
+        request = OnechainRPCRequest(
+            method=method,
+            params=params,
+        )
+
+        try:
+            response = await self.client.post(
+                self.rpc_url,
+                json=request.model_dump(),
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+
+            rpc_response = OnechainRPCResponse(**response.json())
+
+            if rpc_response.error:
+                raise Exception(
+                    f"RPC error: {rpc_response.error.get('message', 'Unknown error')}"
+                )
+
+            return rpc_response.result
+
+        except httpx.HTTPError as e:
+            logger.error(f"HTTP error calling RPC method {method}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Error calling RPC method {method}: {e}")
+            raise
+
+    # ========================================================================
+    # BLOCKCHAIN DATA
+    # ========================================================================
+
+    async def get_latest_checkpoint(self) -> int:
+        """
+        Get latest checkpoint (similar to block number).
+
+        Returns:
+            Latest checkpoint sequence number
+        """
+        try:
+            result = await self._call_rpc("sui_getLatestCheckpointSequenceNumber")
+            return int(result)
+        except Exception as e:
+            logger.error(f"Error getting latest checkpoint: {e}")
+            return 0
+
+    async def get_checkpoint(self, sequence_number: int) -> dict[str, Any] | None:
+        """
+        Get checkpoint data.
+
+        Args:
+            sequence_number: Checkpoint sequence number
+
+        Returns:
+            Checkpoint data or None
+        """
+        try:
+            result = await self._call_rpc("sui_getCheckpoint", [str(sequence_number)])
+            return result
+        except Exception:
+            logger.exception(f"Error getting checkpoint {sequence_number}")
+            return None
+
+    async def get_transaction(
+        self,
+        digest: str,
+    ) -> OnechainTransaction | None:
+        """
+        Get transaction by digest (hash).
+
+        Args:
+            digest: Transaction digest/hash
+
+        Returns:
+            Transaction data or None
+        """
+        try:
+            result = await self._call_rpc(
+                "sui_getTransactionBlock",
+                [
+                    digest,
+                    {
+                        "showInput": True,
+                        "showEffects": True,
+                        "showEvents": True,
+                    },
+                ],
+            )
+
+            if not result:
+                return None
+
+            # Parse events
+            events: list[OnechainEventData] = []
+            if "events" in result:
+                for event_data in result["events"]:
+                    try:
+                        event = OnechainEventData(**event_data)
+                        events.append(event)
+                    except Exception:
+                        logger.warning(f"Failed to parse event: {event_data}")
+
+            return OnechainTransaction(
+                digest=result["digest"],
+                timestamp_ms=result.get("timestampMs", 0),
+                checkpoint=result.get("checkpoint"),
+                effects=result.get("effects", {}),
+                events=events,
+            )
+
+        except Exception:
+            logger.exception(f"Error getting transaction {digest}")
+            return None
+
+    # ========================================================================
+    # EVENTS
+    # ========================================================================
+
+    async def query_events(
+        self,
+        event_type: str,
+        from_checkpoint: int,
+        to_checkpoint: int | None = None,
+    ) -> list[OnechainEventData]:
+        """
+        Query events by type.
+
+        Args:
+            event_type: Full event type (e.g., "0x123::market::PositionOpened")
+            from_checkpoint: Starting checkpoint
+            to_checkpoint: Ending checkpoint (None for latest)
+
+        Returns:
+            List of events
+        """
+        try:
+            # Build event filter
+            query = {"MoveEventType": f"{self.package_id}::{event_type}"}
+
+            # Query events
+            result = await self._call_rpc(
+                "suix_queryEvents",
+                [
+                    query,
+                    None,  # Cursor for pagination
+                    100,  # Limit
+                    False,  # Descending order
+                ],
+            )
+            logger.debug(f"Event query result: {result}")
+
+            if not result or "data" not in result:
+                return []
+
+            events: list[OnechainEventData] = []
+            for event_data in result["data"]:
+                try:
+                    logger.debug(f"Event data onechain: {event_data}")
+                    event = OnechainEventData(**event_data)
+
+                    # Filter by checkpoint range
+                    if event.timestamp_ms:
+                        # Note: In production, you'd need checkpoint-to-timestamp mapping
+                        events.append(event)
+
+                except Exception:
+                    logger.warning(f"Failed to parse event: {event_data}")
+
+            return events
+
+        except Exception:
+            logger.exception(f"Error querying events {event_type}")
+            return []
+
+    # ========================================================================
+    # OBJECT QUERIES
+    # ========================================================================
+
+    async def get_object(self, object_id: str) -> dict[str, Any] | None:
+        """
+        Get object data by ID.
+
+        Args:
+            object_id: Object ID (position, market, etc.)
+
+        Returns:
+            Object data or None
+        """
+        try:
+            result = await self._call_rpc(
+                "sui_getObject",
+                [
+                    object_id,
+                    {
+                        "showType": True,
+                        "showContent": True,
+                        "showOwner": True,
+                    },
+                ],
+            )
+
+            return result.get("data") if result else None
+
+        except Exception:
+            logger.exception(f"Error getting object {object_id}")
+            return None
+
+    async def get_position(self, position_id: str) -> dict[str, Any] | None:
+        """
+        Get position data from Onechain.
+
+        Args:
+            position_id: Position object ID
 
         Returns:
             Position data or None
         """
         try:
-            if not self.contract:
-                logger.error("Contract not initialized")
+            obj = await self.get_object(position_id)
+
+            if not obj or "content" not in obj:
                 return None
 
-            # Convert position_id to bytes32
-            position_id_bytes = Web3.to_bytes(hexstr=position_id)
+            content = obj["content"]
+            if "fields" not in content:
+                return None
 
-            result = self.contract.functions.getPosition(position_id_bytes).call()
+            fields = content["fields"]
 
+            # Parse position fields
             return {
-                "user": result[0],
-                "market_id": Web3.to_hex(result[1]),
-                "size": Decimal(result[2]) / Decimal(10**18),
-                "collateral": Decimal(result[3]) / Decimal(10**18),
-                "entry_price": Decimal(result[4]) / Decimal(10**18),
-                "is_long": result[5],
+                "id": position_id,
+                "user": fields.get("user"),
+                "market_id": fields.get("market_id"),
+                "size": Decimal(fields.get("size", "0")) / SCALE,
+                "collateral": Decimal(fields.get("collateral", "0")) / SCALE,
+                "entry_price": Decimal(fields.get("entry_price", "0")) / SCALE,
+                "leverage": Decimal(fields.get("leverage", "0")) / Decimal(10**2),
+                "is_long": fields.get("is_long", True),
+                "accumulated_funding": Decimal(fields.get("accumulated_funding", "0"))
+                / SCALE,
             }
 
-        except Exception as e:
-            logger.error(f"Error getting position {position_id}: {e}")
+        except Exception:
+            logger.exception(f"Error getting position {position_id}")
             return None
 
-    async def get_events(
+    # ========================================================================
+    # EVENT PARSING
+    # ========================================================================
+
+    def parse_position_opened_event(
         self,
-        event_name: str,
-        from_block: int,
-        to_block: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
+        event: OnechainEventData,
+    ) -> PositionOpenedEvent | None:
         """
-        Get contract events.
+        Parse PositionOpened event.
 
         Args:
-            event_name: Event name (e.g., "PositionOpened")
-            from_block: Starting block number
-            to_block: Ending block number (None for latest)
+            event: Raw event data
 
         Returns:
-            List of event logs
+            Parsed event or None
         """
         try:
-            if not self.contract:
-                logger.error("Contract not initialized")
-                return []
+            data = event.parsed_json
 
-            if to_block is None:
-                to_block = await self.get_latest_block()
+            return PositionOpenedEvent(
+                user=data["owner"],
+                market_id=data["market_id"],
+                position_id=data["position_id"],
+                size=Decimal(data["size"]) / SCALE,
+                collateral=Decimal(data["collateral"]) / SCALE,
+                entry_price=Decimal(data["entry_price"]) / SCALE,
+                direction=int(data["direction"]),  # 0 = long, 1 = short
+                timestamp=int(data["timestamp"]),
+            )
 
-            event = getattr(self.contract.events, event_name)
-            events = event.create_filter(
-                fromBlock=from_block, toBlock=to_block
-            ).get_all_entries()
+        except Exception:
+            logger.exception("Error parsing PositionOpened event")
+            return None
 
-            return [self._format_event(e) for e in events]
-
-        except Exception as e:
-            logger.error(f"Error getting events {event_name}: {e}")
-            return []
-
-    def _format_event(self, event: Any) -> Dict[str, Any]:
-        """Format event log to dict."""
-        return {
-            "event": event.event,
-            "address": event.address,
-            "block_number": event.blockNumber,
-            "transaction_hash": Web3.to_hex(event.transactionHash),
-            "log_index": event.logIndex,
-            "args": dict(event.args),
-        }
-
-    async def estimate_gas(
+    def parse_position_closed_event(
         self,
-        function_call: Any,
-        from_address: str,
-    ) -> int:
+        event: OnechainEventData,
+    ) -> PositionClosedEvent | None:
         """
-        Estimate gas for a transaction.
+        Parse PositionClosed event.
 
         Args:
-            function_call: Contract function call
-            from_address: Sender address
+            event: Raw event data
 
         Returns:
-            Estimated gas
+            Parsed event or None
         """
         try:
-            gas = function_call.estimate_gas({"from": from_address})
-            # Add 20% buffer
-            return int(gas * 1.2)
-        except Exception as e:
-            logger.error(f"Error estimating gas: {e}")
-            return settings.liquidation_gas_limit
+            data = event.parsed_json
 
-    def calculate_health_factor(
+            return PositionClosedEvent(
+                user=data["owner"],
+                market_id=data["market_id"],
+                position_id=data["position_id"],
+                close_price=Decimal(data["close_price"]) / SCALE,
+                size=Decimal(data["size"]) / SCALE,
+                collateral_returned=Decimal(data["collateral_returned"]) / SCALE,
+                pnl=Decimal(data["pnl"]) / SCALE,
+                is_profit=bool(data["is_profit"]),
+            )
+
+        except Exception:
+            logger.exception("Error parsing PositionClosed event")
+            return None
+
+    def parse_position_updated_event(
         self,
-        collateral: Decimal,
-        position_size: Decimal,
-        entry_price: Decimal,
-        current_price: Decimal,
-        is_long: bool,
-        maintenance_margin_rate: Decimal,
-        accumulated_funding: Decimal = Decimal("0"),
-    ) -> Decimal:
+        event: OnechainEventData,
+    ) -> PositionUpdatedEvent | None:
         """
-        Calculate position health factor.
-
-        Health Factor = Equity / Maintenance Margin
+        Parse PositionUpdated event.
 
         Args:
-            collateral: Position collateral
-            position_size: Position size
-            entry_price: Entry price
-            current_price: Current market price
-            is_long: True if long position
-            maintenance_margin_rate: Maintenance margin rate
-            accumulated_funding: Accumulated funding payments
+            event: Raw event data
 
         Returns:
-            Health factor (1.0 or below means liquidatable)
+            Parsed PositionUpdatedEvent or None
         """
-        # Calculate unrealized PnL
-        if is_long:
-            pnl = position_size * (current_price - entry_price)
-        else:
-            pnl = position_size * (entry_price - current_price)
+        try:
+            data = event.parsed_json
 
-        # Calculate equity
-        equity = collateral + pnl - accumulated_funding
+            return PositionUpdatedEvent(
+                user=data["owner"],
+                market_id=data["market_id"],
+                position_id=data["position_id"],
+                new_size=Decimal(data["new_size"]) / SCALE,
+                new_collateral=Decimal(data["new_collateral"]) / SCALE,
+                new_entry_price=Decimal(data["new_entry_price"]) / SCALE,
+                direction=int(data["direction"]),
+                timestamp=int(data["timestamp"]),
+            )
 
-        # Calculate maintenance margin requirement
-        position_value = position_size * current_price
-        maintenance_margin = position_value * maintenance_margin_rate
+        except Exception:
+            logger.exception("Error parsing PositionUpdated event")
+            return None
 
-        # Avoid division by zero
-        if maintenance_margin == 0:
-            return Decimal("999999")
-
-        health_factor = equity / maintenance_margin
-
-        return health_factor
-
-    def calculate_liquidation_price(
+    def parse_position_liquidated_event(
         self,
-        entry_price: Decimal,
-        leverage: Decimal,
-        is_long: bool,
-        maintenance_margin_rate: Decimal,
-    ) -> Decimal:
+        event: OnechainEventData,
+    ) -> PositionLiquidatedEvent | None:
         """
-        Calculate liquidation price.
-
-        For Long: Liq Price = Entry Price * (1 - 1/Leverage + MMR)
-        For Short: Liq Price = Entry Price * (1 + 1/Leverage - MMR)
-
-        Args:
-            entry_price: Entry price
-            leverage: Position leverage
-            is_long: True if long position
-            maintenance_margin_rate: Maintenance margin rate
-
-        Returns:
-            Liquidation price
+        Parse PositionLiquidated on-chain event.
         """
-        leverage_factor = Decimal("1") / leverage
-
-        if is_long:
-            # Long liquidation price
-            liq_price = entry_price * (
-                Decimal("1") - leverage_factor + maintenance_margin_rate
-            )
-        else:
-            # Short liquidation price
-            liq_price = entry_price * (
-                Decimal("1") + leverage_factor - maintenance_margin_rate
-            )
-
-        return max(liq_price, Decimal("0"))
-
-
-class BlockchainServiceMock:
-    """Mock version of BlockchainService (no RPC, no contract)."""
-
-    def __init__(self):
-        logger.warning("⚠️ Using BlockchainServiceMock (NO ON-CHAIN CONNECTION)")
-
-        # Fake in-memory data
-        self._positions: Dict[str, Dict[str, Any]] = {
-            "0xpos1": {
-                "user": "0x1111111111111111111111111111111111111111",
-                "market_id": "BTC-PERP",
-                "size": Decimal("0.1"),
-                "collateral": Decimal("500"),
-                "entry_price": Decimal("50000"),
-                "is_long": True,
-            }
-        }
-
-        self._events: List[Dict[str, Any]] = []
-
-        self._block_number = 1
-
-    # ------------------------------------------------------------------
-    # BLOCK
-    # ------------------------------------------------------------------
-
-    async def get_latest_block(self) -> int:
-        self._block_number += 1
-        return self._block_number
-
-    # ------------------------------------------------------------------
-    # POSITION
-    # ------------------------------------------------------------------
-
-    async def get_position_from_chain(
-        self, position_id: str
-    ) -> Optional[Dict[str, Any]]:
-        position = self._positions.get(position_id)
-
-        if not position:
-            logger.warning(f"[MOCK] Position {position_id} not found")
-
-        return position
-
-    # ------------------------------------------------------------------
-    # EVENTS
-    # ------------------------------------------------------------------
-
-    async def get_events(
-        self,
-        event_name: str,
-        from_block: int,
-        to_block: Optional[int] = None,
-    ) -> List[Dict[str, Any]]:
-        return [
-            e
-            for e in self._events
-            if e["event"] == event_name
-            and from_block <= e["block_number"] <= (to_block or self._block_number)
-        ]
-
-    def _format_event(self, event: Any) -> Dict[str, Any]:
-        """Kept for interface compatibility."""
-        return event
-
-    # ------------------------------------------------------------------
-    # GAS
-    # ------------------------------------------------------------------
-
-    async def estimate_gas(
-        self,
-        function_call: Any,
-        from_address: str,
-    ) -> int:
-        return 500_000
-
-    # ------------------------------------------------------------------
-    # RISK ENGINE (GIỮ NGUYÊN LOGIC GỐC)
-    # ------------------------------------------------------------------
-
-    def calculate_health_factor(
-        self,
-        collateral: Decimal,
-        position_size: Decimal,
-        entry_price: Decimal,
-        current_price: Decimal,
-        is_long: bool,
-        maintenance_margin_rate: Decimal,
-        accumulated_funding: Decimal = Decimal("0"),
-    ) -> Decimal:
-        if is_long:
-            pnl = position_size * (current_price - entry_price)
-        else:
-            pnl = position_size * (entry_price - current_price)
-
-        equity = collateral + pnl - accumulated_funding
-        maintenance_margin = position_size * current_price * maintenance_margin_rate
-
-        if maintenance_margin == 0:
-            return Decimal("999999")
-
-        return equity / maintenance_margin
-
-    def calculate_liquidation_price(
-        self,
-        entry_price: Decimal,
-        leverage: Decimal,
-        is_long: bool,
-        maintenance_margin_rate: Decimal,
-    ) -> Decimal:
-        inv_leverage = Decimal("1") / leverage
-
-        if is_long:
-            price = entry_price * (
-                Decimal("1") - inv_leverage + maintenance_margin_rate
-            )
-        else:
-            price = entry_price * (
-                Decimal("1") + inv_leverage - maintenance_margin_rate
+        try:
+            data = event.parsed_json
+            return PositionLiquidatedEvent(
+                position_id=data["position_id"],
+                owner=data["owner"],
+                liquidator=data["liquidator"],
+                market_id=data["market_id"],
+                size=Decimal(data["size"]) / SCALE,
+                collateral=Decimal(data["collateral"]) / SCALE,
+                pnl=Decimal(data["pnl"]) / SCALE,
+                amount_returned_to_liquidator=Decimal(
+                    data.get("amount_returned_to_liquidator", "0")
+                )
+                / SCALE,
+                timestamp=int(data["timestamp"]),
+                # off-chain, set sau
+                liquidation_fee=Decimal("0"),
             )
 
-        return max(price, Decimal("0"))
-
-    # ------------------------------------------------------------------
-    # MOCK HELPERS (OPTIONAL – KHÔNG ẢNH HƯỞNG INTERFACE)
-    # ------------------------------------------------------------------
-
-    def _mock_open_position(self):
-        """Create fake position + event (optional helper)."""
-        pid = f"0xpos{len(self._positions) + 1}"
-
-        entry_price = Decimal(random.randint(45000, 55000))
-
-        self._positions[pid] = {
-            "user": "0xMockUser",
-            "market_id": "BTC-PERP",
-            "size": Decimal("0.05"),
-            "collateral": Decimal("300"),
-            "entry_price": entry_price,
-            "is_long": True,
-        }
-
-        self._events.append(
-            {
-                "event": "PositionOpened",
-                "address": "0xMockContract",
-                "block_number": self._block_number,
-                "transaction_hash": f"0xtx{pid}",
-                "log_index": 0,
-                "args": self._positions[pid],
-            }
-        )
+        except Exception:
+            logger.exception("Error parsing PositionLiquidated event")
+            return None
 
 
-# Global blockchain service instance
-blockchain_service = BlockchainServiceMock()
+# Global service instance
+blockchain_service = BlockchainService()
