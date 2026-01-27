@@ -16,8 +16,8 @@ from app.api.models import (
     PositionsUpdateMessage,
     PositionUpdateItem,
 )
-from app.api.utils import TIMEFRAME_SECONDS, get_candle_start, normalize_hex
-from app.constants import build_collateral_in
+from app.api.utils import TIMEFRAME_SECONDS, get_candle_start
+from app.constants import build_collateral_in, normalize_hex
 from app.db.chart_models import PriceOHLCVModel
 from app.db.models import (
     MarketModel,
@@ -26,12 +26,16 @@ from app.db.models import (
     PositionStatusEnum,
     PriceHistoryModel,
 )
-from app.services.blockchain import blockchain_service
 from app.services.funding import funding_service
 from app.services.notifications import websocket_notifications
 from app.services.oracle import oracle_service
 from app.services.volume_aggregator import volume_aggregator
 from app.services.websocket import manager
+from app.utils.calculations import (
+    calculate_health_factor,
+    calculate_liquidation_price,
+    calculate_pnl,
+)
 
 router = APIRouter(tags=["WebSocket"])
 
@@ -289,21 +293,19 @@ async def websocket_user_positions(
                         current_price: Decimal = price_data.normalized_price
 
                         # Unrealized PnL
-                        if position.side == PositionSideEnum.LONG:
-                            unrealized_pnl = position.size * (
-                                current_price - position.entry_price
-                            )
-                        else:
-                            unrealized_pnl = position.size * (
-                                position.entry_price - current_price
-                            )
+                        unrealized_pnl = calculate_pnl(
+                            size_usd=position.size,
+                            entry_price=position.entry_price,
+                            current_price=current_price,
+                            is_long=(position.side == PositionSideEnum.LONG),
+                        )
 
                         total_unrealized_pnl += unrealized_pnl
 
                         # Health factor
-                        health_factor = blockchain_service.calculate_health_factor(
+                        health_factor = calculate_health_factor(
                             collateral=position.collateral,
-                            position_size=position.size,
+                            size_usd=position.size,
                             entry_price=position.entry_price,
                             current_price=current_price,
                             is_long=(position.side == PositionSideEnum.LONG),
@@ -312,13 +314,11 @@ async def websocket_user_positions(
                         )
 
                         # Liquidation price
-                        liquidation_price = (
-                            blockchain_service.calculate_liquidation_price(
-                                entry_price=position.entry_price,
-                                leverage=position.leverage,
-                                is_long=(position.side == PositionSideEnum.LONG),
-                                maintenance_margin_rate=market.maintenance_margin_rate,
-                            )
+                        liquidation_price = calculate_liquidation_price(
+                            entry_price=position.entry_price,
+                            leverage=position.leverage,
+                            is_long=(position.side == PositionSideEnum.LONG),
+                            maintenance_margin_rate=market.maintenance_margin_rate,
                         )
 
                         position_updates.append(
@@ -326,6 +326,8 @@ async def websocket_user_positions(
                                 position_id=position.position_id,
                                 market_id=position.market_id,
                                 symbol=market.symbol,
+                                market_token=market.symbol.split("/")[0],
+                                collateral_in=build_collateral_in(market.quote_token),
                                 side=position.side,
                                 size=position.size,
                                 collateral=position.collateral,
@@ -436,7 +438,9 @@ async def websocket_market_stats(websocket: WebSocket, market_id: str):
         websocket: WebSocket connection
         market_id: Market identifier
     """
-    await manager.connect_market(websocket, market_id)
+    stream_key = f"market-stats:{market_id}"
+
+    await manager.connect(websocket, stream_key)
 
     try:
         from app.db.session import AsyncSessionLocal
@@ -527,8 +531,8 @@ async def websocket_market_stats(websocket: WebSocket, market_id: str):
                     )
                     message_models = MarketStatsMessage(marketstats=stats)
 
-                    await manager.broadcast_to_market(
-                        message_models.model_dump(mode="json"), market_id
+                    await manager.broadcast(
+                        message_models.model_dump(mode="json"), stream_key
                     )
 
                 # Update every 5 seconds

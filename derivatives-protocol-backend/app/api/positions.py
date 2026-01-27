@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.constants import normalize_hex
 from app.db.models import MarketModel, PositionModel, PositionStatusEnum
 from app.db.session import get_db
 from app.schemas.common import PaginatedResponse, ResponseBase
@@ -14,8 +15,8 @@ from app.schemas.position import (
     PositionSummary,
     PositionWithPnL,
 )
-from app.services.blockchain import blockchain_service
 from app.services.oracle import oracle_service
+from app.utils.calculations import calculate_health_factor, calculate_liquidation_price
 
 router = APIRouter(prefix="/positions", tags=["Positions"])
 
@@ -121,9 +122,9 @@ async def get_position(
             position_data.total_pnl = pnl + position.realized_pnl
 
             # Calculate health metrics
-            health_factor = blockchain_service.calculate_health_factor(
+            health_factor = calculate_health_factor(
                 collateral=position.collateral,
-                position_size=position.size,
+                size_usd=position.size,
                 entry_price=position.entry_price,
                 current_price=current_price,
                 is_long=(position.side.value == "long"),
@@ -140,7 +141,7 @@ async def get_position(
                 position_data.margin_ratio = position.collateral / position_value
 
             # Calculate liquidation price
-            liq_price = blockchain_service.calculate_liquidation_price(
+            liq_price = calculate_liquidation_price(
                 entry_price=position.entry_price,
                 leverage=position.leverage,
                 is_long=(position.side.value == "long"),
@@ -199,7 +200,7 @@ async def get_user_summary(
             total_realized_pnl += position.realized_pnl
 
             # Calculate unrealized PnL
-            price_data = prices.get(market.pyth_price_id)
+            price_data = prices.get(normalize_hex(market.pyth_price_id))
             if price_data:
                 current_price = price_data.normalized_price
 
@@ -246,9 +247,7 @@ async def get_liquidation_candidates(
     """
     from app.services.liquidation import liquidation_bot
 
-    # Get candidates from liquidation bot
-    async with AsyncSession() as temp_db:
-        candidates = await liquidation_bot._find_liquidation_candidates(temp_db)
+    candidates = await liquidation_bot._find_liquidation_candidates(db)
 
     # Return top N by potential reward
     candidates = candidates[:limit]

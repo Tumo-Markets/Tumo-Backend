@@ -19,6 +19,7 @@ from app.api import (
 from app.core.config import settings
 from app.db.session import close_db, init_db
 from app.services.broadcaster import broadcaster
+from app.services.contract_service.tumo_oracle_updater import tumo_oracle_updater
 from app.services.funding import funding_service
 from app.services.indexer import indexer
 from app.services.liquidation import liquidation_bot
@@ -95,6 +96,10 @@ async def lifespan(app: FastAPI):
     volume_agg_task = asyncio.create_task(volume_aggregator.start())
     background_tasks.append(volume_agg_task)
     logger.info("Volume aggregator started")
+
+    oracle_update_task = asyncio.create_task(tumo_oracle_updater.start())
+    background_tasks.append(oracle_update_task)
+    logger.info("Tumo Oracle Updater started")
     yield
 
     # Shutdown

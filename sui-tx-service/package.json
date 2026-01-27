@@ -1,0 +1,39 @@
+{
+  "name": "sui-tx-service",
+  "version": "1.0.0",
+  "description": "Sui Transaction Service for Tumo Protocol",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target node",
+    "lint": "eslint src --ext .ts",
+    "test": "bun test"
+  },
+  "keywords": [
+    "sui",
+    "blockchain",
+    "tumo",
+    "derivatives",
+    "bun"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@onelabs/sui": "^1.0.0",
+    "express": "^4.18.2",
+    "swagger-ui-express": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}

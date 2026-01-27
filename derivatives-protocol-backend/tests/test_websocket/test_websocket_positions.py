@@ -4,7 +4,7 @@ import json
 import websockets
 
 BASE_WS_URL = "ws://localhost:8124/api/v1"
-USER_ADDRESS = "0xabc123..."  # lowercase
+USER_ADDRESS = "0x71b2250b548a6a62c40e52bab8104a8e5050292cd47b9056ed6c94f3aceb81e7"
 
 
 async def test_positions():

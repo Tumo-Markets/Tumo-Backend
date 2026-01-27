@@ -3,26 +3,27 @@ Sample tests for the API.
 
 Run with: pytest tests/
 """
-import pytest
+
 from decimal import Decimal
-from app.schemas.position import PositionSide
+
 from app.schemas.market import MarketStatus
-from app.services.blockchain import blockchain_service
+from app.schemas.position import PositionSide
+from app.utils.calculations import calculate_health_factor, calculate_liquidation_price
 
 
 def test_health_factor_calculation():
     """Test health factor calculation."""
-    
+
     # Test long position in profit
-    health_factor = blockchain_service.calculate_health_factor(
+    health_factor = calculate_health_factor(
         collateral=Decimal("1000"),
-        position_size=Decimal("1"),
+        size_usd=Decimal("1"),
         entry_price=Decimal("50000"),
         current_price=Decimal("51000"),
         is_long=True,
         maintenance_margin_rate=Decimal("0.05"),
     )
-    
+
     # Equity = 1000 + (1 * (51000 - 50000)) = 2000
     # Maintenance Margin = 1 * 51000 * 0.05 = 2550
     # Health Factor = 2000 / 2550 ≈ 0.78
@@ -32,26 +33,26 @@ def test_health_factor_calculation():
 
 def test_liquidation_price_calculation():
     """Test liquidation price calculation."""
-    
+
     # Test long position
-    liq_price = blockchain_service.calculate_liquidation_price(
+    liq_price = calculate_liquidation_price(
         entry_price=Decimal("50000"),
         leverage=Decimal("10"),
         is_long=True,
         maintenance_margin_rate=Decimal("0.05"),
     )
-    
+
     # For long: Liq = 50000 * (1 - 1/10 + 0.05) = 50000 * 0.95 = 47500
     assert liq_price == Decimal("47500")
-    
+
     # Test short position
-    liq_price = blockchain_service.calculate_liquidation_price(
+    liq_price = calculate_liquidation_price(
         entry_price=Decimal("50000"),
         leverage=Decimal("10"),
         is_long=False,
         maintenance_margin_rate=Decimal("0.05"),
     )
-    
+
     # For short: Liq = 50000 * (1 + 1/10 - 0.05) = 50000 * 1.05 = 52500
     assert liq_price == Decimal("52500")
 
