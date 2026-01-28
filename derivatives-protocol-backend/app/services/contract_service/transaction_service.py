@@ -79,11 +79,6 @@ class TransactionService:
 
         Raises:
             Exception: If update fails
-
-        Example:
-            >>> digest = await sui_tx_service.update_price(Decimal("50123.45"))
-            >>> print(digest)
-            '0xabc123...'
         """
         # Convert to Tumo format: price * 10^6
         price_tumo = int(price * Decimal("1000000"))
@@ -103,9 +98,9 @@ class TransactionService:
                 digest = result["digest"]
                 logger.info(f"✅ Price updated: {price} USD → TX: {digest}")
                 return digest
-            else:
-                error_msg = result.get("error", "Unknown error")
-                raise Exception(f"Failed to update price: {error_msg}")
+
+            error_msg = result.get("error", "Unknown error")
+            raise Exception(f"Failed to update price: {error_msg}")
 
         except httpx.HTTPError as e:
             logger.error(f"HTTP error updating price: {e}")
@@ -134,11 +129,6 @@ class TransactionService:
 
         Raises:
             Exception: If liquidation fails
-
-        Example:
-            >>> digest = await sui_tx_service.liquidate_position("0x123...")
-            >>> print(digest)
-            '0xdef456...'
         """
         try:
             logger.debug(f"Liquidating position for user: {user_address}")
@@ -155,9 +145,9 @@ class TransactionService:
                 digest = result["digest"]
                 logger.info(f"✅ Position liquidated: {user_address} → TX: {digest}")
                 return digest
-            else:
-                error_msg = result.get("error", "Unknown error")
-                raise Exception(f"Failed to liquidate: {error_msg}")
+
+            error_msg = result.get("error", "Unknown error")
+            raise Exception(f"Failed to liquidate: {error_msg}")
 
         except httpx.HTTPError as e:
             logger.error(f"HTTP error liquidating position: {e}")
@@ -190,43 +180,32 @@ class TransactionService:
     async def execute_sponsored_transaction(
         self,
         *,
-        kind_bytes_b64: str,
+        transaction_bytes_b64: str,
         user_signature_b64: str,
-        sender: str,
-        gas_budget: int | None = None,
     ) -> dict[str, Any]:
         """
-        Execute a sponsored transaction.
+        Execute a sponsored transaction (NEW FLOW: txBytes already built by FE).
 
         Flow:
-        - FE builds tx + user signs
-        - FE sends (kindBytesB64, userSignatureB64) to backend
-        - Backend calls TS service to sponsor-sign + submit
+        - FE builds FULL tx bytes (includes sender, gasOwner, gasPayment, gasBudget, ...)
+        - User signs FULL tx bytes
+        - FE sends (transactionBytesB64, userSignatureB64) to backend
+        - Backend calls TS service to sponsor-sign + submit (without modifying tx)
 
         Args:
-            kind_bytes_b64: Base64 encoded TransactionKind bytes
+            transaction_bytes_b64: Base64 encoded full TransactionBlock bytes
             user_signature_b64: User signature (flag||sig||pubkey)
-            sender: User address (0x...)
-            gas_budget: Optional gas budget override
 
         Returns:
             Full execution result from chain
         """
         try:
             payload: dict[str, Any] = {
-                "kindBytesB64": kind_bytes_b64,
+                "transactionBytesB64": transaction_bytes_b64,
                 "userSignatureB64": user_signature_b64,
-                "sender": sender,
             }
 
-            if gas_budget is not None:
-                payload["gasBudget"] = gas_budget
-
-            logger.debug(
-                "Submitting sponsored tx | sender={} gas_budget={}",
-                sender,
-                gas_budget,
-            )
+            logger.debug("Submitting sponsored tx (NEW FLOW)")
 
             response = await self.client.post(
                 f"{self.base_url}/api/sponsored/execute",
@@ -239,11 +218,7 @@ class TransactionService:
             if not result.get("success"):
                 raise Exception(result.get("error", "Unknown sponsor execution error"))
 
-            logger.info(
-                "✅ Sponsored tx executed | digest={}",
-                result.get("digest"),
-            )
-
+            logger.info("✅ Sponsored tx executed | digest={}", result.get("digest"))
             return result
 
         except httpx.HTTPError as e:
