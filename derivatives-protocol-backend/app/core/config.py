@@ -115,7 +115,7 @@ class Settings(BaseSettings):
         alias="ONECHAIN_CHAIN_ID",
     )
     onechain_package_id: str = Field(
-        default="0x31b6ea6f6c2e1727d590fba2b6ccd93dd0785f238fd91cb16030d468a466bc6e",
+        default="0x3d027f54a56da8f7ff37202acd710d7e09c5b4754390495fc194b4aa8545c8da",
         alias="ONECHAIN_PACKAGE_ID",
         description="Deployed Move package ID",
     )

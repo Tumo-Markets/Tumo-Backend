@@ -212,10 +212,8 @@ class ClosePositionRequest(BaseModel):
     status: PositionStatus = PositionStatus.CLOSED
 
 class SponsoredTxRequest(BaseModel):
-    kindBytesB64: str = Field(..., description="Base64 TransactionKind bytes")
+    transactionBytesB64: str = Field(..., description="Base64 FULL TransactionBlock bytes (already built by FE)")
     userSignatureB64: str = Field(..., description="User signature (flag||sig||pubkey)")
-    sender: str = Field(..., description="User Sui address")
-    gasBudget: int | None = Field(None, description="Optional gas budget override")
 
 
 class SponsoredTxResponse(BaseModel):

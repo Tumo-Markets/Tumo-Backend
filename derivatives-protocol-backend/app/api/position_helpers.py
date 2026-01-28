@@ -627,19 +627,17 @@ async def execute_sponsored_transaction_endpoint(
     req: SponsoredTxRequest,
 ):
     """
-    Execute a gas-sponsored transaction.
+    Execute a gas-sponsored transaction (NEW FLOW).
 
     FE flow:
-    - build tx
-    - user signs
-    - FE calls this endpoint
+    - build FULL tx bytes (includes sender, gasOwner, gasPayment, gasBudget, ...)
+    - user signs FULL tx bytes
+    - FE calls this endpoint with (transactionBytesB64, userSignatureB64)
     """
     try:
         result = await tx_service.execute_sponsored_transaction(
-            kind_bytes_b64=req.kindBytesB64,
+            transaction_bytes_b64=req.transactionBytesB64,
             user_signature_b64=req.userSignatureB64,
-            sender=req.sender,
-            gas_budget=req.gasBudget,
         )
 
         return {
