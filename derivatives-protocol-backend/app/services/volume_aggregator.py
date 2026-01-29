@@ -183,9 +183,7 @@ class VolumeAggregator:
         statuses: list[PositionStatusEnum] | None,
     ) -> tuple[Decimal, int]:
         stmt = select(
-            func.coalesce(
-                func.sum(func.abs(PositionModel.size) * PositionModel.entry_price), 0
-            ),
+            func.coalesce(func.sum(func.abs(PositionModel.size)), 0),
             func.count(PositionModel.id),
         ).where(
             PositionModel.market_id == market_id,

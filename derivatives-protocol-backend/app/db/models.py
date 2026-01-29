@@ -55,8 +55,8 @@ class MarketModel(Base):
     market_id = Column(String(100), unique=True, nullable=False, index=True)
 
     # Token info
-    base_token = Column(String(42), nullable=False)
-    quote_token = Column(String(42), nullable=False)
+    base_token = Column(String(100), nullable=False)
+    quote_token = Column(String(100), nullable=False)
     market_token = Column(String(100), nullable=False)
     collateral_token = Column(String(100), nullable=False)
     symbol = Column(String(20), nullable=False, index=True)
