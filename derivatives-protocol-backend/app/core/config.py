@@ -68,24 +68,6 @@ class Settings(BaseSettings):
     )
 
     # ======================
-    # Blockchain Type Selection
-    # ======================
-    blockchain_type: Literal["evm", "onechain"] = Field(
-        default="onechain",
-        alias="BLOCKCHAIN_TYPE",
-        description="Blockchain type: 'evm' for Ethereum-compatible chains, 'onechain' for Move-based chains",
-    )
-
-    # ======================
-    # EVM Blockchain (for Ethereum, BSC, Polygon, etc.)
-    # ======================
-    # Only required if blockchain_type = "evm"
-    evm_rpc_url: str = Field(default="http://localhost:8545", alias="EVM_RPC_URL")
-    evm_chain_id: int = Field(default=1, alias="EVM_CHAIN_ID")
-    evm_contract_address: str = Field(default="", alias="EVM_CONTRACT_ADDRESS")
-    evm_start_block: int = Field(default=0, alias="EVM_START_BLOCK")
-
-    # ======================
     # Onechain (Move-based blockchain)
     # ======================
     # Only required if blockchain_type = "onechain"
@@ -128,7 +110,6 @@ class Settings(BaseSettings):
     # Backward Compatibility (Legacy)
     # ======================
     # These are kept for backward compatibility
-    # They map to EVM settings when blockchain_type = "evm"
     rpc_url: str = Field(default="", alias="RPC_URL")
     chain_id: int = Field(default=0, alias="CHAIN_ID")
     contract_address: str = Field(default="", alias="CONTRACT_ADDRESS")
@@ -209,16 +190,6 @@ class Settings(BaseSettings):
     # ======================
 
     @property
-    def is_evm(self) -> bool:
-        """Check if using EVM blockchain."""
-        return self.blockchain_type == "evm"
-
-    @property
-    def is_onechain(self) -> bool:
-        """Check if using Onechain blockchain."""
-        return self.blockchain_type == "onechain"
-
-    @property
     def onechain_rpc_url(self) -> str:
         """Get Onechain RPC URL based on selected network."""
         if self.onechain_network == "local":
@@ -231,16 +202,13 @@ class Settings(BaseSettings):
     @property
     def active_rpc_url(self) -> str:
         """
-        Get active RPC URL based on blockchain type.
+        Get active RPC URL.
 
         Returns:
             RPC URL for the active blockchain
         """
-        if self.is_onechain:
-            return self.onechain_rpc_url
-        else:
-            # EVM: Use legacy rpc_url if set, otherwise use evm_rpc_url
-            return self.rpc_url or self.evm_rpc_url
+
+        return self.onechain_rpc_url
 
     @property
     def active_chain_id(self) -> int | str:
@@ -250,11 +218,8 @@ class Settings(BaseSettings):
         Returns:
             Chain ID (int for EVM, str for Onechain)
         """
-        if self.is_onechain:
-            return self.onechain_chain_id
-        else:
-            # EVM: Use legacy chain_id if set, otherwise use evm_chain_id
-            return self.chain_id or self.evm_chain_id
+
+        return self.onechain_chain_id
 
     @property
     def active_start_block(self) -> int:
@@ -264,11 +229,8 @@ class Settings(BaseSettings):
         Returns:
             Starting block number (EVM) or checkpoint (Onechain)
         """
-        if self.is_onechain:
-            return self.onechain_start_checkpoint
-        else:
-            # EVM: Use legacy start_block if set, otherwise use evm_start_block
-            return self.start_block or self.evm_start_block
+
+        return self.onechain_start_checkpoint
 
     # ======================
     # Helpers
