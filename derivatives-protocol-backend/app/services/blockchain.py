@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from app.constants import SCALE
+from app.constants import SCALE_CONTRACT, SCALE_WALLET
 from app.core.config import settings
 from app.schemas.onechain import (
     OnechainEventData,
@@ -309,13 +309,13 @@ class BlockchainService:
                 "id": position_id,
                 "user": fields.get("user"),
                 "market_id": fields.get("market_id"),
-                "size": Decimal(fields.get("size", "0")) / SCALE,
-                "collateral": Decimal(fields.get("collateral", "0")) / SCALE,
-                "entry_price": Decimal(fields.get("entry_price", "0")) / SCALE,
+                "size": Decimal(fields.get("size", "0")) / SCALE_WALLET,
+                "collateral": Decimal(fields.get("collateral", "0")) / SCALE_WALLET,
+                "entry_price": Decimal(fields.get("entry_price", "0")) / SCALE_CONTRACT,
                 "leverage": Decimal(fields.get("leverage", "0")) / Decimal(10**2),
                 "is_long": fields.get("is_long", True),
                 "accumulated_funding": Decimal(fields.get("accumulated_funding", "0"))
-                / SCALE,
+                / SCALE_CONTRACT,
             }
 
         except Exception:
@@ -346,9 +346,9 @@ class BlockchainService:
                 user=data["owner"],
                 market_id=data["market_id"],
                 position_id=data["position_id"],
-                size=Decimal(data["size"]) / SCALE,
-                collateral=Decimal(data["collateral"]) / SCALE,
-                entry_price=Decimal(data["entry_price"]) / SCALE,
+                size=Decimal(data["size"]) / SCALE_WALLET,
+                collateral=Decimal(data["collateral"]) / SCALE_WALLET,
+                entry_price=Decimal(data["entry_price"]) / SCALE_CONTRACT,
                 direction=int(data["direction"]),  # 0 = long, 1 = short
                 timestamp=int(data["timestamp"]),
             )
@@ -377,10 +377,10 @@ class BlockchainService:
                 user=data["owner"],
                 market_id=data["market_id"],
                 position_id=data["position_id"],
-                close_price=Decimal(data["close_price"]) / SCALE,
-                size=Decimal(data["size"]) / SCALE,
-                collateral_returned=Decimal(data["collateral_returned"]) / SCALE,
-                pnl=Decimal(data["pnl"]) / SCALE,
+                close_price=Decimal(data["close_price"]) / SCALE_CONTRACT,
+                size=Decimal(data["size"]) / SCALE_WALLET,
+                collateral_returned=Decimal(data["collateral_returned"]) / SCALE_WALLET,
+                pnl=Decimal(data["pnl"]) / SCALE_WALLET,
                 is_profit=bool(data["is_profit"]),
             )
 
@@ -408,9 +408,9 @@ class BlockchainService:
                 user=data["owner"],
                 market_id=data["market_id"],
                 position_id=data["position_id"],
-                new_size=Decimal(data["new_size"]) / SCALE,
-                new_collateral=Decimal(data["new_collateral"]) / SCALE,
-                new_entry_price=Decimal(data["new_entry_price"]) / SCALE,
+                new_size=Decimal(data["new_size"]) / SCALE_WALLET,
+                new_collateral=Decimal(data["new_collateral"]) / SCALE_WALLET,
+                new_entry_price=Decimal(data["new_entry_price"]) / SCALE_CONTRACT,
                 direction=int(data["direction"]),
                 timestamp=int(data["timestamp"]),
             )
@@ -433,13 +433,13 @@ class BlockchainService:
                 owner=data["owner"],
                 liquidator=data["liquidator"],
                 market_id=data["market_id"],
-                size=Decimal(data["size"]) / SCALE,
-                collateral=Decimal(data["collateral"]) / SCALE,
-                pnl=Decimal(data["pnl"]) / SCALE,
+                size=Decimal(data["size"]) / SCALE_WALLET,
+                collateral=Decimal(data["collateral"]) / SCALE_WALLET,
+                pnl=Decimal(data["pnl"]) / SCALE_WALLET,
                 amount_returned_to_liquidator=Decimal(
                     data.get("amount_returned_to_liquidator", "0")
                 )
-                / SCALE,
+                / SCALE_WALLET,
                 timestamp=int(data["timestamp"]),
                 # off-chain, set sau
                 liquidation_fee=Decimal("0"),
